@@ -13,7 +13,10 @@ from app.core.security import (
     authenticate,
     ensure_owns_customer,
 )
-from app.db.session import get_session
+from app.db.agent_models import ensure_agent_schema
+from app.db.session import get_engine, get_session
+from app.repositories.agent_repo import AgentRepository
+from app.services.agent_service import AgentService
 from app.repositories.customers_repo import CustomersRepository
 from app.repositories.orders_repo import OrdersRepository
 from app.repositories.products_repo import ProductsRepository
@@ -68,6 +71,12 @@ def get_ticket_service(db: DbSession) -> TicketService:
     return TicketService(SupportRepository(db), OrdersRepository(db))
 
 
+async def get_agent_service(db: DbSession) -> AgentService:
+    await ensure_agent_schema(get_engine())   # idempotent, once per engine
+    return AgentService(AgentRepository(db))
+
+
+AgentSvc = Annotated[AgentService, Depends(get_agent_service)]
 CustomerSvc = Annotated[CustomerService, Depends(get_customer_service)]
 OrderSvc = Annotated[OrderService, Depends(get_order_service)]
 ProductSvc = Annotated[ProductService, Depends(get_product_service)]

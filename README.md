@@ -209,6 +209,73 @@ tests/         pytest (ASGI transport, per-test DB copy)
 Dockerfile, docker-compose.yml, pyproject.toml, .env.example
 ```
 
-## 9. Roadmap — Category 2 (next phase)
-The agent orchestration layer (`POST /agent/chat`, LangGraph, KB retrieval,
-execution observability) consumes these Tool APIs. Not included here.
+## 9. Category 2 — Agentic APIs (the support agent)
+
+The frontend only ever calls `/api/v1/agent/*`. The agent (LangGraph) calls the Tool APIs above
+as the **agent service principal**, scoped to the chat customer with `X-Customer-Id`, so the
+Tool API's ownership checks apply to everything the agent does. Design: `docs/agent-api-design.md`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/agent/chat` | Run one agent turn `{customer_id, session_id, message}` |
+| GET | `/agent/sessions/{session_id}` | Session info (+ `awaiting_confirmation`) |
+| GET | `/agent/sessions/{session_id}/messages` | Conversation history (paginated) |
+| GET | `/agent/sessions/{session_id}/traces` | Execution traces for every run (paginated) |
+| GET | `/agent/runs/{run_id}` | Run status + metadata |
+| GET | `/agent/runs/{run_id}/steps` | Structured execution steps |
+| GET | `/agent/runs/{run_id}/tools` | Tool calls (redacted request/response metadata) |
+| GET | `/agent/health` | Agent + dependency health (DB, Tool API + circuit breaker, KB, LLM) |
+
+```
+screen -(abuse/legal/safety)-----------------> escalate (ticket) -> END
+   |-(pending action + "yes")-> execute_confirmed -> END   (re-checks eligibility, idempotent)
+   |-(pending action + "no")--> cancel_pending -> END
+   '-> understand -(needs human)-> escalate
+         '-> plan <--> act       tool loop, <= AGENT_MAX_STEPS; reads run, writes are only *staged*
+               '-> respond -> END
+```
+
+**Safety properties** (enforced in code outside the LLM; covered by `tests/test_agent.py`)
+- A refund/return/cancel *question* never changes data. Writes are staged as a pending action and
+  the customer must reply "yes"; consent is parsed deterministically, expires after
+  `AGENT_PENDING_TTL_MINUTES`, and is discarded if the customer changes topic.
+- Every write needs its eligibility read first (`prerequisite`), is re-validated at confirm time and
+  sent with an idempotency key (`{session}:{pending_id}`), so a stray second "yes" cannot double-refund.
+- `customer_id` is never a tool argument; orders are addressed by `order_number` and resolved only
+  against *this customer's* orders. The LLM has no SQL/DB access, only the typed tool catalogue.
+- Abuse, legal threats, safety reports, chargebacks, privacy/fraud requests, tool failures and
+  unresolved ambiguity (2 clarifications) open a ticket and hand off honestly (KB `GUARD-001`,
+  `ESC-*`); the agent never guesses a status when a tool fails.
+- Traces hold structured events only: PII keys redacted, card-like numbers masked (Luhn),
+  payloads size-capped, no chain-of-thought. Observability endpoints are ownership-checked.
+
+**Planners** (`AGENT_PLANNER=auto|llm|rules`): with `ANTHROPIC_API_KEY` set the agent uses Claude
+(`LLM_MODEL`, default `claude-sonnet-5-5`, tool use, server-side refusal fallback on by default;
+`LLM_REFUSAL_FALLBACK=false` disables it). Without a key it runs the deterministic offline
+rule-based planner, so everything works and is testable with no credentials. Both sit behind the
+same `Planner` interface and the same guardrails.
+
+> **Note:** the agent stores sessions/runs/steps in its own `agent_*` tables, created automatically
+> in the configured database on first use. With the default SQLite file that modifies
+> `_DB/ecommerce.db` (a tracked file); point `DATABASE_URL` at a copy for local experiments.
+
+### Example
+```bash
+K='-H X-API-Key:dev-public-key -H Content-Type:application/json'
+curl -s $K localhost:8000/api/v1/agent/chat \
+  -d '{"customer_id":1,"session_id":"SESSION1001","message":"I want a refund for ORD-100001"}'
+# -> status "awaiting_confirmation", pending_confirmation{tool:"initiate_refund",
+#    description:"refund $60.00 for order ORD-100001 to the original payment"}
+curl -s $K localhost:8000/api/v1/agent/chat \
+  -d '{"customer_id":1,"session_id":"SESSION1001","message":"yes"}'
+# -> "Done - Refund of $60.00 to original payment approved within policy (REF-001)."
+curl -s $K localhost:8000/api/v1/agent/sessions/SESSION1001/traces | jq '.items[0].steps[].summary'
+```
+`customer_id` is the numeric DB id (the brief's `CUST1001`-style ids don't exist in the schema).
+In production the identity should come from the verified login/JWT, not the request body; sending
+`X-Customer-Id` already forces the body value to match.
+
+### Known limits
+Rate limiter, idempotency cache and circuit breaker are per-process (swap for Redis to scale out);
+KB retrieval is BM25 over `_KB` (swappable behind `kb.search`); the LLM planner path is unit-tested
+with a fake client and has **not** been run against the live Anthropic API.

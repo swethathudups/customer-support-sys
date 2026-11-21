@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1024
     agent_max_steps: int = 8
     agent_refund_approval_limit_cents: int = 10000  # $100.00
+    agent_planner: str = "auto"                 # auto | llm | rules  (auto: llm iff ANTHROPIC_API_KEY set)
+    agent_tool_api_base_url: str = ""           # empty -> call the in-process app over ASGI
+    agent_run_timeout_seconds: float = 90.0
+    agent_pending_ttl_minutes: int = 15         # how long a "please confirm" stays actionable
+    agent_history_messages: int = 12            # prior messages given to the planner
+    agent_kb_top_k: int = 3
+    llm_refusal_fallback: bool = True           # server-side fallback on safety refusals
 
     # Paths (not overridable via env; derived)
     project_root: Path = Field(default=PROJECT_ROOT, exclude=True)

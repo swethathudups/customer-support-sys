@@ -32,6 +32,10 @@ agent (added later) will consume as tools:
 * **products** — catalog
 * **tickets** — support tickets
 
+**Category 2 — Agentic APIs** (`/agent/*`): `POST /agent/chat` runs the LangGraph support
+agent, which calls the Tool APIs above (as a customer-scoped service principal);
+`/agent/sessions|runs/...` expose messages, traces, steps and tool calls.
+
 Auth: send `X-API-Key`. Act on behalf of a customer with `X-Customer-Id`
 (customer-ownership is enforced on every order/customer resource).
 """
@@ -61,6 +65,7 @@ def create_app() -> FastAPI:
             {"name": "order-actions", "description": "Refunds, returns, claims, cancellation (writes)."},
             {"name": "products", "description": "Product catalog."},
             {"name": "tickets", "description": "Support tickets."},
+            {"name": "agent", "description": "Agentic APIs: chat + execution observability."},
             {"name": "health", "description": "Liveness/health."},
         ],
     )
